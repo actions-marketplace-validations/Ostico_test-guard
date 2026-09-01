@@ -1,2 +1,0 @@
-TLDR FAIL CHECK: OK
-  Line 2: **❌ FAIL** — Some changed source files lack adequate test coverage.

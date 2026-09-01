@@ -14,7 +14,11 @@ import re
 import subprocess
 from pathlib import Path
 
-from src.coverage_normalizer import normalize_coverage_file
+from src.coverage_normalizer import (
+    extract_reported_files,
+    is_in_report,
+    normalize_coverage_file,
+)
 from src.models import FileVerdict, LayerResult, Verdict
 
 _DIFF_COVER_TIMEOUT = 60
@@ -29,14 +33,14 @@ _TRACEBACK_EXCEPTION_RE = re.compile(
 
 def _extract_stderr_message(stderr: str) -> str:
     """Extract the last exception line from stderr for clean error reporting.
-    
+
     Searches for the last traceback exception pattern (e.g., "FileNotFoundError: ...").
     Falls back to the last non-empty line if no exception pattern is found.
     """
     matches = list(_TRACEBACK_EXCEPTION_RE.finditer(stderr))
     if matches:
         return stderr[matches[-1].start():].strip()
-    lines = [l.strip() for l in stderr.strip().splitlines() if l.strip()]
+    lines = [ln.strip() for ln in stderr.strip().splitlines() if ln.strip()]
     return lines[-1] if lines else stderr.strip()
 
 
@@ -105,6 +109,7 @@ def run_layer1(
     coverage_files: list[str],
     threshold: int,
     diff_files: list[str],
+    trivial_files: set[str] | None = None,
 ) -> LayerResult:
     if not coverage_files:
         return LayerResult(
@@ -138,6 +143,13 @@ def run_layer1(
     normalized_files = [normalize_coverage_file(f, diff_files) for f in valid_files]
     try:
         total_pct, per_file, error_reason = _compute_diff_coverage(normalized_files)
+        # Collected before the temp files are cleaned up: every path the
+        # coverage report mentions, regardless of whether diff-cover put it in
+        # src_stats. Used below to tell "nothing to measure" apart from
+        # "never instrumented".
+        reported_files: set[str] = set()
+        for nf in normalized_files:
+            reported_files |= extract_reported_files(nf)
     finally:
         # Clean up temp files created by normalization
         for nf, vf in zip(normalized_files, valid_files, strict=True):
@@ -161,10 +173,24 @@ def run_layer1(
     # present in src_stats has coverage >= threshold AND no source file
     # is absent from src_stats. Non-source files (tests, docs) are ignored
     # to prevent false FAILs when test/doc files are added without coverage.
+    trivial = trivial_files or set()
     source_files = [f for f in diff_files if f in per_file]
-    absent_files = [
+    absent_candidates = [
         f for f in diff_files if f not in per_file and not _is_non_source(f)
     ]
+    # A changed source file absent from src_stats has no *executable* changed
+    # lines. When its changes are trivial (whitespace/comments/docstrings only)
+    # there is nothing to cover, so it must not FAIL — this mirrors Layer 3,
+    # which already skips trivial changes. Only genuinely un-measured files
+    # (executable changes but missing from the report) remain a real gap.
+    trivial_absent = [f for f in absent_candidates if f in trivial]
+    # Absence from src_stats has two very different causes. A file the coverage
+    # report *does* contain simply had no executable changed lines — type
+    # declarations, interface members, doc comments. There is nothing to cover,
+    # so it is not a coverage gap. Only files the report never mentions are.
+    still_absent = [f for f in absent_candidates if f not in trivial]
+    unmeasurable_absent = [f for f in still_absent if is_in_report(f, reported_files)]
+    absent_files = [f for f in still_absent if not is_in_report(f, reported_files)]
     all_above = all(per_file.get(f, 0.0) >= threshold for f in source_files)
     passed = bool(source_files) and all_above and not absent_files
 
@@ -195,6 +221,20 @@ def run_layer1(
             reason="not in coverage report",
             layer="layer1",
         ))
+    for f in trivial_absent:
+        file_verdicts.append(FileVerdict(
+            file=f,
+            verdict=Verdict.PASS,
+            reason="no executable lines changed (trivial: whitespace/comments)",
+            layer="layer1",
+        ))
+    for f in unmeasurable_absent:
+        file_verdicts.append(FileVerdict(
+            file=f,
+            verdict=Verdict.PASS,
+            reason="in coverage report, but no executable lines changed",
+            layer="layer1",
+        ))
 
     if not source_files:
         details = f"No changed source files found in coverage report (threshold: {threshold}%)"
@@ -208,12 +248,13 @@ def run_layer1(
         file_verdicts=file_verdicts,
         short_circuit=passed,
         coverage_details=per_file,
+        unmeasurable_files=set(unmeasurable_absent),
     )
 
 
 def _is_non_source(filepath: str) -> bool:
     """Check if a file is a test, doc, or config file (not source code).
-    
+
     Used to exclude non-source files from the absent-files check in Layer 1,
     preventing false FAILs when test/doc files are added without coverage data.
     """

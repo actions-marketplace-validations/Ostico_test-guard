@@ -16,7 +16,7 @@ DEFAULT_PER_PAGE = 100
 
 def create_session(token: str) -> requests.Session:
     """Create a configured requests session for GitHub API calls.
-    
+
     Configures exponential backoff retry strategy for transient GitHub API errors:
     - 429 (rate limit): backoff_factor=1 gives 1s, 2s, 4s delays
     - 5xx errors: transient server issues that may resolve on retry
@@ -89,7 +89,7 @@ def post_json(
     body: dict[str, Any],
 ) -> requests.Response:
     """POST JSON body and return raw response without raising.
-    
+
     Intentionally does not call raise_for_status(). Callers are responsible for
     checking response.ok and handling errors. This allows callers to implement
     custom error handling (e.g., logging, retries, or graceful degradation).
@@ -103,7 +103,7 @@ def get_text(
     accept: str = "application/vnd.github.raw+json",
 ) -> str | None:
     """GET text content with an Accept override; best-effort on errors.
-    
+
     Overrides the session's default Accept header to request raw file content
     instead of JSON. Returns None on any error (404, 403, etc.) rather than raising,
     allowing callers to handle missing or inaccessible files gracefully.

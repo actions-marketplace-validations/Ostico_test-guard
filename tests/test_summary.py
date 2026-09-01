@@ -51,7 +51,9 @@ def warning_report() -> Report:
 def pass_report() -> Report:
     return Report(
         layers=[
-            LayerResult("layer1", Verdict.PASS, "All files above threshold", [], short_circuit=True),
+            LayerResult(
+                "layer1", Verdict.PASS, "All files above threshold", [], short_circuit=True
+            ),
         ],
     )
 
@@ -131,13 +133,14 @@ class TestGenerateSummary:
         mock_client.chat.completions.create.return_value = MagicMock(choices=[mock_choice])
 
         result = generate_summary(
-            warning_report, ["lib/Utils.php"], [], True, "openai/gpt-4.1-mini", "fake-token",
+            warning_report, ["lib/Utils.php"], [], True, "gpt-4.1-mini", "fake-key",
+            "https://example.test/v1",
         )
 
         assert result == "**Why this WARNING?**\n- Explanation here."
         mock_openai_cls.assert_called_once_with(
-            base_url="https://models.github.ai/inference",
-            api_key="fake-token",
+            base_url="https://example.test/v1",
+            api_key="fake-key",
         )
         mock_client.chat.completions.create.assert_called_once()
 

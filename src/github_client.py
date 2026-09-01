@@ -198,7 +198,7 @@ def post_comment(
     body: str,
 ) -> None:
     """Post or update a comment on a PR.
-    
+
     Uses the GitHub API issues endpoint (not pull_requests) because GitHub treats
     PR comments as issue comments internally. Logs a warning on failure but does
     not raise, allowing the pipeline to continue even if the comment fails.
@@ -225,7 +225,7 @@ def post_check_run(
     summary: str,
 ) -> None:
     """Create a completed check run via the Checks API.
-    
+
     Logs a warning on failure but does not raise, allowing the pipeline to
     continue even if the check run creation fails.
     """
@@ -259,7 +259,7 @@ def report_to_github(
     sha: str,
 ) -> None:
     """Post a check run and optionally a PR comment.
-    
+
     Catches all exceptions to ensure reporting failures never crash the pipeline.
     Logs warnings for any errors but allows the action to complete successfully.
     """

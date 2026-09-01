@@ -1,3 +1,0 @@
-TLDR PASS CHECK: OK
-  Line 0: ## 🧪 Test-Guard Report
-  Line 2: **✅ PASS** — All changed source files have adequate test coverage.

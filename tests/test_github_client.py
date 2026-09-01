@@ -79,7 +79,7 @@ class TestFormatReport:
     def test_layer2_advisory_when_layer3_present(self, full_report):
         md = format_report(full_report)
         assert "(advisory)" not in md
-        l2_line = [l for l in md.splitlines() if "Test File Matching" in l][0]
+        l2_line = next(line for line in md.splitlines() if "Test File Matching" in line)
         assert "(advisory)" not in l2_line
 
     def test_layer2_not_advisory_without_layer3(self):
@@ -90,7 +90,7 @@ class TestFormatReport:
             ]
         )
         md = format_report(report)
-        l2_line = [l for l in md.splitlines() if "Test File Matching" in l][0]
+        l2_line = next(line for line in md.splitlines() if "Test File Matching" in line)
         assert "(advisory)" not in l2_line
 
 
@@ -210,7 +210,9 @@ class TestTLDR:
         lines = md.strip().splitlines()
         assert lines[0] == "## 🧪 Test-Guard Report"
         # line 1 is blank, line 2 is TL;DR
-        assert "✅" in lines[2] and "PASS" in lines[2], f"Expected TL;DR PASS at line 2, got: {lines[2]}"
+        assert "✅" in lines[2] and "PASS" in lines[2], (
+            f"Expected TL;DR PASS at line 2, got: {lines[2]}"
+        )
         assert "adequate test coverage" in lines[2]
 
     def test_tldr_fail(self):
@@ -218,7 +220,9 @@ class TestTLDR:
         r = Report(layers=[LayerResult("layer1", Verdict.FAIL, "bad", [])])
         md = format_report(r)
         lines = md.strip().splitlines()
-        assert "❌" in lines[2] and "FAIL" in lines[2], f"Expected TL;DR FAIL at line 2, got: {lines[2]}"
+        assert "❌" in lines[2] and "FAIL" in lines[2], (
+            f"Expected TL;DR FAIL at line 2, got: {lines[2]}"
+        )
         assert "lack adequate" in lines[2]
 
     def test_tldr_warning(self):
@@ -226,7 +230,9 @@ class TestTLDR:
         r = Report(layers=[LayerResult("layer3", Verdict.WARNING, "warn", [])])
         md = format_report(r)
         lines = md.strip().splitlines()
-        assert "⚠️" in lines[2] and "WARNING" in lines[2], f"Expected TL;DR WARNING at line 2, got: {lines[2]}"
+        assert "⚠️" in lines[2] and "WARNING" in lines[2], (
+            f"Expected TL;DR WARNING at line 2, got: {lines[2]}"
+        )
         assert "gaps" in lines[2] or "review" in lines[2].lower()
 
     def test_tldr_skip(self):
@@ -234,7 +240,9 @@ class TestTLDR:
         r = Report(layers=[LayerResult("layer1", Verdict.SKIP, "skip", [])])
         md = format_report(r)
         lines = md.strip().splitlines()
-        assert "⏭️" in lines[2] and "SKIP" in lines[2], f"Expected TL;DR SKIP at line 2, got: {lines[2]}"
+        assert "⏭️" in lines[2] and "SKIP" in lines[2], (
+            f"Expected TL;DR SKIP at line 2, got: {lines[2]}"
+        )
 
 
 class TestReportToGitHub:

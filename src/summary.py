@@ -15,6 +15,7 @@ from openai.types.chat import (
     ChatCompletionUserMessageParam,
 )
 
+from src.config import DEFAULT_AI_BASE_URL
 from src.models import Report, Verdict
 
 _PROMPT_PATH = Path(__file__).parent.parent / "prompts" / "summary_explainer.txt"
@@ -97,6 +98,7 @@ def generate_summary(
     coverage_files_provided: bool,
     model: str,
     token: str,
+    base_url: str = DEFAULT_AI_BASE_URL,
 ) -> str | None:
     """Generate a developer-facing explanation for WARNING/FAIL verdicts.
 
@@ -117,7 +119,7 @@ def generate_summary(
 
     try:
         client = OpenAI(
-            base_url="https://models.github.ai/inference",
+            base_url=base_url,
             api_key=token,
         )
         response = client.chat.completions.create(

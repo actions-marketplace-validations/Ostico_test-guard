@@ -1,3 +1,5 @@
+.*
+!.gitignore
 # Python
 __pycache__/
 *.py[cod]
@@ -27,3 +29,5 @@ TODO.md
 # OS
 .DS_Store
 Thumbs.db
+
+htmlcov

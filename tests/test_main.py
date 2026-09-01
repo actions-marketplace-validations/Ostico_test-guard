@@ -26,6 +26,8 @@ def base_config():
         ai_enabled=True,
         ai_model="openai/gpt-5-mini",
         ai_confidence_threshold=0.7,
+        ai_base_url="https://api.openai.com/v1",
+        ai_api_key="sk-fake",
     )
 
 
@@ -234,12 +236,20 @@ class TestRunPipeline:
             source_diffs={"src/auth.py": "+ login()"},
             deleted_files=set(),
             test_diffs={"tests/test_auth.py": "+ test_login()"},
-            l2_matched_tests={"src/auth.py": "tests/test_auth.py"},
+            l2_matched_tests={"src/auth.py": ["tests/test_auth.py"]},
             coverage_details={"src/auth.py": 75.0},
             coverage_threshold=80,
             model="openai/gpt-5-mini",
-            token="ghp_fake",
+            # The provider key, never the GitHub token — the two are unrelated
+            # now that GitHub Models is retired.
+            token="sk-fake",
+            base_url="https://api.openai.com/v1",
+            reasoning_effort="none",
+            temperature=0.1,
+            max_output_tokens=8192,
+            max_input_tokens=8000,
             confidence_threshold=0.7,
+            unmeasurable_files=set(),
         )
 
     @patch("src.main.run_layer3")
@@ -308,9 +318,10 @@ class TestRunPipeline:
         run_pipeline(base_config)
 
         call_kwargs = mock_l3.call_args.kwargs
+        # A source now maps to the LIST of its matched tests (empty if none).
         assert call_kwargs["l2_matched_tests"] == {
-            "src/auth.py": "tests/test_auth.py",
-            "src/billing.py": None,
+            "src/auth.py": ["tests/test_auth.py"],
+            "src/billing.py": [],
         }
 
     @patch("src.main.run_layer3")

@@ -1,7 +1,0 @@
-PASS: TL;DR present at line 2
-PASS: Coverage Analysis in output
-PASS: No Layer 3 in output
-PASS: No advisory in output
-PASS: Result line at bottom
-
-MANUAL QA: PASS

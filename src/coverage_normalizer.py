@@ -2,6 +2,9 @@
 
 Detects coverage format (Clover/Cobertura/JaCoCo) and normalizes Docker-internal
 paths so diff-cover can match them against git-relative file paths.
+
+Also exposes extract_reported_files()/is_in_report(), which answer a question
+diff-cover cannot: is a file present in the coverage report at all?
 """
 
 from __future__ import annotations
@@ -18,6 +21,12 @@ class CoverageFormat(Enum):
     COBERTURA = "cobertura"
     JACOCO = "jacoco"
     UNKNOWN = "unknown"
+
+
+# LCOV tracefiles are plain text, not XML — handled separately by the
+# report-presence extractor. diff-cover reads them natively, so they are never
+# path-normalized here.
+_LCOV_SUFFIXES = (".info", ".lcov", ".dat")
 
 
 def detect_format(filepath: str) -> CoverageFormat:
@@ -89,6 +98,87 @@ def _extract_clover_paths(root: ET.Element) -> list[str]:
         name = file_elem.get("name") or file_elem.get("path") or ""
         if name:
             paths.append(name)
+    return paths
+
+
+def _extract_clover_report_paths(root: ET.Element) -> list[str]:
+    """Extract every path candidate from a Clover XML tree.
+
+    Deliberately returns BOTH attributes of each <file>, where
+    _extract_clover_paths() prefers "name": reporters disagree on which one is
+    fully qualified. PHPUnit puts the full path in name=; Jest's clover reporter
+    puts only the basename there and the real path in path=. A presence check
+    needs whichever attribute is qualified, so it takes both and lets
+    is_in_report() do the matching.
+    """
+    paths: list[str] = []
+    for file_elem in root.findall(".//file"):
+        paths.extend(val for attr in ("name", "path") if (val := file_elem.get(attr)))
+    return paths
+
+
+def _is_absolute_path(path: str) -> bool:
+    """Check for a POSIX ("/x") or Windows ("C:/x", "C:\\x") absolute path."""
+    return path.startswith("/") or (len(path) >= 3 and path[1] == ":" and path[2] in ("/", "\\"))
+
+
+def _extract_cobertura_paths(root: ET.Element) -> list[str]:
+    """Extract all source paths from a Cobertura XML tree.
+
+    <class filename="..."> is relative to the <sources><source> roots whenever
+    the report was scoped to a subdirectory: coverage.py run as `--cov=src`
+    emits filename="main.py" plus source=".../src", never "src/main.py". Each
+    root is joined on so the result is comparable to a git path. Filenames that
+    are already absolute are left alone.
+    """
+    sources = [
+        stripped
+        for stripped in (
+            (s.text or "").replace("\\", "/").rstrip("/") for s in root.findall("sources/source")
+        )
+        if stripped
+    ]
+
+    paths: list[str] = []
+    for clazz in root.findall(".//class"):
+        fname = (clazz.get("filename") or "").replace("\\", "/")
+        if not fname:
+            continue
+        paths.append(fname)
+        if _is_absolute_path(fname):
+            continue
+        paths.extend(f"{source}/{fname}" for source in sources)
+    return paths
+
+
+def _extract_jacoco_paths(root: ET.Element) -> list[str]:
+    """Extract package-qualified source paths from a JaCoCo XML tree.
+
+    JaCoCo splits the path: <package name="com/foo"> holds <sourcefile
+    name="Bar.java">. Joined here so the result is comparable to a git path.
+    """
+    paths: list[str] = []
+    for pkg in root.findall(".//package"):
+        pkg_name = (pkg.get("name") or "").replace("\\", "/").strip("/")
+        for src in pkg.findall("sourcefile"):
+            name = src.get("name") or ""
+            if name:
+                paths.append(f"{pkg_name}/{name}" if pkg_name else name)
+    return paths
+
+
+def _extract_lcov_paths(filepath: str) -> list[str]:
+    """Extract source paths from an LCOV tracefile (one per SF: record)."""
+    paths: list[str] = []
+    try:
+        with open(filepath, encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                if line.startswith("SF:"):
+                    name = line[3:].strip()
+                    if name:
+                        paths.append(name)
+    except OSError:
+        return []
     return paths
 
 
@@ -199,3 +289,71 @@ def normalize_coverage_file(filepath: str, diff_files: list[str]) -> str:
         return _normalize_cobertura(filepath, diff_files)
 
     return filepath
+
+
+def extract_reported_files(filepath: str) -> set[str]:
+    """Return every source path a coverage report mentions, "/"-normalized.
+
+    This answers a question diff-cover cannot. diff-cover's src_stats lists
+    only files with changed *executable* lines, so a file whose diff touches
+    nothing executable — type declarations, interface members, doc comments —
+    is absent from src_stats even when it is fully instrumented and reported at
+    100%. Telling "absent because there was nothing to measure" apart from
+    "absent because it was never instrumented" needs the report itself.
+
+    Returns an empty set for unknown or unparseable formats, which leaves
+    callers on their conservative pre-existing behaviour.
+    """
+    suffix = Path(filepath).suffix.lower()
+
+    if suffix in _LCOV_SUFFIXES:
+        raw = _extract_lcov_paths(filepath)
+    elif suffix == ".xml":
+        try:
+            root = ET.parse(filepath).getroot()  # noqa: S314
+        except (ET.ParseError, OSError):
+            return set()
+        fmt = detect_format(filepath)
+        if fmt == CoverageFormat.CLOVER:
+            raw = _extract_clover_report_paths(root)
+        elif fmt == CoverageFormat.COBERTURA:
+            raw = _extract_cobertura_paths(root)
+        elif fmt == CoverageFormat.JACOCO:
+            raw = _extract_jacoco_paths(root)
+        else:
+            return set()
+    else:
+        return set()
+
+    reported: set[str] = set()
+    for path in raw:
+        cleaned = path.replace("\\", "/").strip()
+        while cleaned.startswith("./"):
+            cleaned = cleaned[2:]
+        if cleaned:
+            reported.add(cleaned)
+    return reported
+
+
+def is_in_report(diff_file: str, reported_files: set[str]) -> bool:
+    """Check whether a git-relative path appears in a coverage report.
+
+    Exact match first, then suffix matching in both directions, because
+    reporters disagree on path shape:
+    - the report path may keep a prefix normalization could not strip
+      ("/app/src/x.ts" for "src/x.ts")
+    - the report path may be *shorter* than the git path (JaCoCo emits
+      "com/foo/Bar.java" for "src/main/java/com/foo/Bar.java")
+
+    The reverse direction requires a separator in the reported path, so a bare
+    basename never matches a same-named file living in another directory.
+    """
+    if diff_file in reported_files:
+        return True
+    needle = "/" + diff_file
+    for reported in reported_files:
+        if reported.endswith(needle):
+            return True
+        if "/" in reported and diff_file.endswith("/" + reported):
+            return True
+    return False

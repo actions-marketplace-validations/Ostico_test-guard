@@ -8,7 +8,7 @@ from enum import Enum
 
 class Verdict(Enum):
     """Test adequacy verdict for a file or overall report.
-    
+
     Priority (worst-wins): FAIL > WARNING > PASS > SKIP.
     SKIP means the layer was unable to produce a verdict (e.g., no coverage data).
     """
@@ -27,12 +27,16 @@ class FileVerdict:
     reason: str
     layer: str
     matched_test: str | None = None
+    # All test files matched to this source (a class/module can have several:
+    # unit + integration + e2e). matched_test stays the canonical one for
+    # reporting; matched_tests carries the full set for batching.
+    matched_tests: tuple[str, ...] = ()
 
 
 @dataclass
 class LayerResult:
     """Result from one layer of analysis.
-    
+
     Attributes:
         layer: Layer identifier (e.g., "layer1", "layer2", "layer3").
         verdict: Verdict for this layer (PASS/FAIL/WARNING/SKIP).
@@ -40,6 +44,9 @@ class LayerResult:
         file_verdicts: Per-file verdicts produced by this layer.
         short_circuit: If True, this layer's verdict is final (Layer 2 in AI-disabled mode).
         coverage_details: Per-file coverage percentages (populated by Layer 1).
+        unmeasurable_files: Changed source files that ARE in the coverage report
+            but have no executable changed lines, so there is nothing to cover
+            (populated by Layer 1, consumed by Layer 3's Gate 2).
     """
 
     layer: str
@@ -48,12 +55,13 @@ class LayerResult:
     file_verdicts: list[FileVerdict]
     short_circuit: bool = False
     coverage_details: dict[str, float] | None = None
+    unmeasurable_files: set[str] = field(default_factory=lambda: set[str]())
 
 
 @dataclass
 class Report:
     """Final report aggregating all layers.
-    
+
     The overall_verdict property implements a priority-based aggregation:
     - If Layer 3 ran and returned non-SKIP, its verdict is authoritative (overrides L1+L2).
     - Otherwise, worst-wins across all layers: FAIL > WARNING > PASS > SKIP.
@@ -66,7 +74,7 @@ class Report:
     @property
     def overall_verdict(self) -> Verdict:
         """Compute the final verdict by priority: Layer 3 authority, then worst-wins.
-        
+
         Returns:
             Verdict: FAIL > WARNING > PASS > SKIP (worst-wins if no Layer 3 authority).
         """

@@ -21,6 +21,32 @@ _SAMPLE_SRC_STATS_JSON = (
 )
 
 
+# A real Clover report: both files instrumented, so report-presence is provable.
+_CLOVER_WITH_TYPES = """<?xml version="1.0" encoding="UTF-8"?>
+<coverage generated="1700000000" clover="3.2.0">
+  <project timestamp="1700000000">
+    <file name="src/bruno/types.ts"><metrics statements="0"/></file>
+    <file name="src/bruno/request.ts"><metrics statements="12"/></file>
+  </project>
+</coverage>
+"""
+
+
+# Jest/istanbul clover: basename in name=, qualified path in path=.
+_CLOVER_JEST_STYLE = """<?xml version="1.0" encoding="UTF-8"?>
+<coverage generated="1700000000" clover="3.2.0">
+  <project timestamp="1700000000">
+    <file name="types.ts" path="/home/runner/work/app/app/src/bruno/types.ts">
+      <metrics statements="3"/>
+    </file>
+    <file name="request.ts" path="/home/runner/work/app/app/src/bruno/request.ts">
+      <metrics statements="40"/>
+    </file>
+  </project>
+</coverage>
+"""
+
+
 class TestConstants:
     def test_diff_cover_timeout_value(self):
         assert _DIFF_COVER_TIMEOUT == 60
@@ -70,8 +96,14 @@ class TestRunLayer1:
         assert result.verdict == Verdict.FAIL
         assert result.short_circuit is False
         assert result.coverage_details == per_file
-        assert any(fv.file == "src/billing.py" and fv.verdict == Verdict.FAIL for fv in result.file_verdicts)
-        assert any(fv.file == "src/auth.py" and fv.verdict == Verdict.PASS for fv in result.file_verdicts)
+        assert any(
+            fv.file == "src/billing.py" and fv.verdict == Verdict.FAIL
+            for fv in result.file_verdicts
+        )
+        assert any(
+            fv.file == "src/auth.py" and fv.verdict == Verdict.PASS
+            for fv in result.file_verdicts
+        )
 
     @patch("src.layer1_coverage._compute_diff_coverage")
     def test_no_short_circuit_when_file_absent_from_src_stats(self, mock_cov, tmp_path):
@@ -86,8 +118,111 @@ class TestRunLayer1:
         assert result.verdict == Verdict.FAIL
         assert result.short_circuit is False
         assert result.coverage_details == {"src/auth.py": 92.5}
-        assert any(fv.file == "src/new_feature.py" and fv.verdict == Verdict.FAIL for fv in result.file_verdicts)
-        assert any("not in coverage report" in fv.reason for fv in result.file_verdicts if fv.file == "src/new_feature.py")
+        assert any(
+            fv.file == "src/new_feature.py" and fv.verdict == Verdict.FAIL
+            for fv in result.file_verdicts
+        )
+        assert any(
+            "not in coverage report" in fv.reason
+            for fv in result.file_verdicts
+            if fv.file == "src/new_feature.py"
+        )
+
+    @patch("src.layer1_coverage._compute_diff_coverage")
+    def test_trivial_absent_file_passes_not_fails(self, mock_cov, tmp_path):
+        # A source file absent from src_stats because its changes are trivial
+        # (whitespace/comments) has no executable lines to cover -> it must PASS,
+        # not FAIL, and must not block the short-circuit.
+        cov = tmp_path / "coverage.xml"
+        cov.write_text("<xml/>")
+        mock_cov.return_value = (100.0, {"src/auth.py": 100.0}, "")
+        result = run_layer1(
+            coverage_files=[str(cov)],
+            threshold=80,
+            diff_files=["src/auth.py", "src/docs_only.py"],
+            trivial_files={"src/docs_only.py"},
+        )
+        assert result.verdict == Verdict.PASS
+        assert result.short_circuit is True
+        trivial_fv = next(
+            fv for fv in result.file_verdicts if fv.file == "src/docs_only.py"
+        )
+        assert trivial_fv.verdict == Verdict.PASS
+        assert "no executable lines changed" in trivial_fv.reason
+
+    @patch("src.layer1_coverage._compute_diff_coverage")
+    def test_non_trivial_absent_file_still_fails(self, mock_cov, tmp_path):
+        # An absent file NOT marked trivial is a real coverage gap -> FAIL.
+        cov = tmp_path / "coverage.xml"
+        cov.write_text("<xml/>")
+        mock_cov.return_value = (100.0, {"src/auth.py": 100.0}, "")
+        result = run_layer1(
+            coverage_files=[str(cov)],
+            threshold=80,
+            diff_files=["src/auth.py", "src/new_feature.py"],
+            trivial_files={"src/docs_only.py"},  # unrelated file marked trivial
+        )
+        assert result.verdict == Verdict.FAIL
+        assert any(
+            fv.file == "src/new_feature.py" and fv.verdict == Verdict.FAIL
+            for fv in result.file_verdicts
+        )
+
+    @patch("src.layer1_coverage._compute_diff_coverage")
+    def test_absent_but_present_in_report_passes(self, mock_cov, tmp_path):
+        # types.ts is instrumented and reported, but its diff touched only
+        # interface members, so diff-cover leaves it out of src_stats. Nothing
+        # executable changed -> nothing to cover -> PASS, not a coverage gap.
+        cov = tmp_path / "clover.xml"
+        cov.write_text(_CLOVER_WITH_TYPES)
+        mock_cov.return_value = (100.0, {"src/bruno/request.ts": 100.0}, "")
+        result = run_layer1(
+            coverage_files=[str(cov)],
+            threshold=95,
+            diff_files=["src/bruno/request.ts", "src/bruno/types.ts"],
+        )
+        assert result.verdict == Verdict.PASS
+        assert result.short_circuit is True
+        assert result.unmeasurable_files == {"src/bruno/types.ts"}
+        fv = next(f for f in result.file_verdicts if f.file == "src/bruno/types.ts")
+        assert fv.verdict == Verdict.PASS
+        assert "no executable lines changed" in fv.reason
+
+    @patch("src.layer1_coverage._compute_diff_coverage")
+    def test_absent_but_in_jest_clover_report_passes(self, mock_cov, tmp_path):
+        # Regression, Ostico/bruno-mcp#5: jest writes the basename in name= and
+        # the real path in path=. Reading name= alone produced a bare basename,
+        # so src/bruno/types.ts read as un-instrumented and FAILed at 100%.
+        cov = tmp_path / "clover.xml"
+        cov.write_text(_CLOVER_JEST_STYLE)
+        mock_cov.return_value = (100.0, {"src/bruno/request.ts": 100.0}, "")
+        result = run_layer1(
+            coverage_files=[str(cov)],
+            threshold=95,
+            diff_files=["src/bruno/request.ts", "src/bruno/types.ts"],
+        )
+        assert result.verdict == Verdict.PASS
+        assert result.short_circuit is True
+        assert result.unmeasurable_files == {"src/bruno/types.ts"}
+
+    @patch("src.layer1_coverage._compute_diff_coverage")
+    def test_absent_and_missing_from_report_still_fails(self, mock_cov, tmp_path):
+        # Same absence, different cause: the file is nowhere in the report, so
+        # it is genuinely un-instrumented. That stays a FAIL.
+        cov = tmp_path / "clover.xml"
+        cov.write_text(_CLOVER_WITH_TYPES)
+        mock_cov.return_value = (100.0, {"src/bruno/request.ts": 100.0}, "")
+        result = run_layer1(
+            coverage_files=[str(cov)],
+            threshold=95,
+            diff_files=["src/bruno/request.ts", "src/bruno/untracked.ts"],
+        )
+        assert result.verdict == Verdict.FAIL
+        assert result.short_circuit is False
+        assert result.unmeasurable_files == set()
+        fv = next(f for f in result.file_verdicts if f.file == "src/bruno/untracked.ts")
+        assert fv.verdict == Verdict.FAIL
+        assert fv.reason == "not in coverage report"
 
     @patch("src.layer1_coverage._compute_diff_coverage")
     def test_pass_exactly_at_threshold(self, mock_cov, tmp_path):
@@ -161,11 +296,14 @@ class TestRunLayer1:
         showing a vacuous 100% coverage message."""
         cov = tmp_path / "coverage.xml"
         cov.write_text("""<?xml version="1.0" ?>
-<coverage version="7.6" timestamp="1700000000" lines-valid="100" lines-covered="100" line-rate="1" branches-covered="0" branches-valid="0" branch-rate="0" complexity="0">
+<coverage version="7.6" timestamp="1700000000" lines-valid="100"
+          lines-covered="100" line-rate="1" branches-covered="0"
+          branches-valid="0" branch-rate="0" complexity="0">
     <packages>
         <package name="." line-rate="1" branch-rate="0" complexity="0">
             <classes>
-                <class name="other.py" filename="other.py" line-rate="1" branch-rate="0" complexity="0">
+                <class name="other.py" filename="other.py" line-rate="1"
+                       branch-rate="0" complexity="0">
                     <lines><line number="1" hits="1"/></lines>
                 </class>
             </classes>
@@ -459,7 +597,10 @@ class TestDockerPathNormalization:
         mock_run.return_value = subprocess.CompletedProcess(
             args=["diff-cover"],
             returncode=0,
-            stdout='{"total_percent_covered": 90.0, "src_stats": {"lib/Controller/AuthCookie.php": {"percent_covered": 90.0}}}',
+            stdout=(
+                '{"total_percent_covered": 90.0, "src_stats": '
+                '{"lib/Controller/AuthCookie.php": {"percent_covered": 90.0}}}'
+            ),
             stderr="",
         )
         diff_files = ["lib/Controller/AuthCookie.php", "lib/Model/UserDao.php"]
@@ -489,7 +630,10 @@ class TestDockerPathNormalization:
         mock_run.return_value = subprocess.CompletedProcess(
             args=["diff-cover"],
             returncode=0,
-            stdout='{"total_percent_covered": 90.0, "src_stats": {"lib/AuthCookie.php": {"percent_covered": 90.0}}}',
+            stdout=(
+                '{"total_percent_covered": 90.0, "src_stats": '
+                '{"lib/AuthCookie.php": {"percent_covered": 90.0}}}'
+            ),
             stderr="",
         )
         run_layer1([str(cov)], threshold=80, diff_files=["lib/AuthCookie.php"])

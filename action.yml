@@ -15,17 +15,43 @@ inputs:
     description: 'Minimum diff-coverage % to auto-pass (0-100).'
     default: '80'
   test-patterns:
-    description: 'Source→test file mapping. "auto" detects from project structure.'
+    description: 'Source→test file mapping. "auto" detects from project structure, or a JSON object of {id: {src_pattern, test_template}} merged onto the defaults.'
     default: 'auto'
   exclude-patterns:
-    description: 'Comma-separated glob patterns to exclude from analysis.'
+    description: 'Comma-separated glob patterns to exclude from analysis. Full override of the built-in defaults — set this to remove or replace a default.'
     default: '*.json,*.yml,*.yaml,*.md,*.txt,*.lock,*.toml,*.cfg,*.ini,*.sql,migrations/**,docs/**,*.config.js,*.config.ts,*.config.mjs,*.config.cjs,Gruntfile.js,Gulpfile.js,conftest.py,setup.py,manage.py,noxfile.py,fabfile.py,build.rs'
+  extra-exclude-patterns:
+    description: 'Comma-separated glob patterns to exclude IN ADDITION to exclude-patterns (unioned, not overriding). Use this to add repo-specific excludes (e.g. benchmarks/**) without re-listing the defaults.'
+    default: ''
   ai-enabled:
     description: 'Enable AI Layer 3 analysis (true/false).'
     default: 'true'
   ai-model:
-    description: 'GitHub Models model ID for AI analysis.'
-    default: 'openai/gpt-4.1-mini'
+    description: 'Model ID for AI analysis, exactly as the configured endpoint expects (OpenAI: "gpt-4.1-mini"; OpenRouter: "openai/gpt-4.1-mini").'
+    default: 'gpt-4.1-mini'
+  ai-base-url:
+    description: 'OpenAI-compatible inference endpoint. Examples: https://api.openai.com/v1, https://<resource>.services.ai.azure.com/openai/v1, https://openrouter.ai/api/v1. GitHub Models (models.github.ai) was retired on 2026-07-30 and no longer works.'
+    default: 'https://api.openai.com/v1'
+  ai-api-key:
+    # Do not write a ${{ ... }} expression anywhere in this file, including
+    # descriptions: GitHub evaluates them when loading the manifest, and
+    # `secrets` is not in scope for a composite action, so the whole action
+    # fails with "Unrecognized named-value: 'secrets'".
+    description: 'API key for ai-base-url; pass it from a repository secret. Required for Layer 3 — a GITHUB_TOKEN is not accepted by any of these providers. When empty, Layer 3 is skipped and the gate falls back to Layer 1 + Layer 2.'
+    required: false
+    default: ''
+  ai-reasoning-effort:
+    description: 'Thinking budget for reasoning models: none, minimal, low, medium, high. Defaults to none so a thought trace cannot consume the output budget and truncate the JSON verdict. Set to an empty string to omit the parameter entirely; providers that reject it (OpenAI gpt-4.1 family) have it stripped automatically.'
+    default: 'none'
+  ai-temperature:
+    description: 'Sampling temperature. 0.1 suits OpenAI-style models for a deterministic verdict. Gemini 3.x recommends its default of 1.0 and warns that lowering it can cause looping or degraded reasoning — set 1.0 for those models.'
+    default: '0.1'
+  ai-max-output-tokens:
+    description: 'Output token cap per request. Thought tokens are charged against it, and exhausting it returns finish_reason=length with empty content, which is reported as a warning. Raise it if you raise ai-reasoning-effort. Gemini 3.x permits up to 65536.'
+    default: '8192'
+  ai-max-input-tokens:
+    description: 'Budget for the prompt Layer 3 sends, which drives batching and how much diff evidence survives. The default 8000 was sized for the retired GitHub Models 8K input cap; raise it (e.g. 32000) on a large-context provider so big test diffs are not shed, at the cost of more tokens per minute. Also scales the per-diff character cap.'
+    default: '8000'
   ai-confidence-threshold:
     description: 'Minimum AI confidence to enforce fail verdict (0.0-1.0). Below this, fail becomes warning.'
     default: '0.7'
@@ -50,8 +76,15 @@ runs:
         INPUT_COVERAGE-THRESHOLD: ${{ inputs.coverage-threshold }}
         INPUT_TEST-PATTERNS: ${{ inputs.test-patterns }}
         INPUT_EXCLUDE-PATTERNS: ${{ inputs.exclude-patterns }}
+        INPUT_EXTRA-EXCLUDE-PATTERNS: ${{ inputs.extra-exclude-patterns }}
         INPUT_AI-ENABLED: ${{ inputs.ai-enabled }}
         INPUT_AI-MODEL: ${{ inputs.ai-model }}
+        INPUT_AI-BASE-URL: ${{ inputs.ai-base-url }}
+        INPUT_AI-API-KEY: ${{ inputs.ai-api-key }}
+        INPUT_AI-REASONING-EFFORT: ${{ inputs.ai-reasoning-effort }}
+        INPUT_AI-TEMPERATURE: ${{ inputs.ai-temperature }}
+        INPUT_AI-MAX-OUTPUT-TOKENS: ${{ inputs.ai-max-output-tokens }}
+        INPUT_AI-MAX-INPUT-TOKENS: ${{ inputs.ai-max-input-tokens }}
         INPUT_AI-CONFIDENCE-THRESHOLD: ${{ inputs.ai-confidence-threshold }}
         PYTHONPATH: ${{ github.action_path }}
       run: python ${{ github.action_path }}/src/main.py

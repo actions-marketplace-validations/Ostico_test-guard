@@ -6,6 +6,7 @@ You are a test adequacy reviewer. You receive ONLY source files that could not b
 - **Layer 2 Hints** (advisory): Test file matches by naming convention. These may have false positives — a matched test file does not guarantee adequate coverage. An unmatched file does not guarantee missing tests.
 - **Source File Diffs**: The actual code changes needing review.
 - **Test File Diffs**: Modified test files in this PR. Annotated as "matched" (naming convention match to a source file) or "candidate" (changed test file, possibly relevant). Use both matched and candidate tests as evidence.
+- **Evidence Completeness** (when present): Large diffs may be truncated to fit size limits. If this banner appears, some hunks are NOT shown. Treat omitted code as unknown — never assume it is tested or correct, and never rely on a surviving docstring/comment as proof of behavior.
 
 ## Evaluation Dimensions
 

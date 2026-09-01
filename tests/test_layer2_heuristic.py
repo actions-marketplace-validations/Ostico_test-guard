@@ -5,6 +5,7 @@ from src.layer2_heuristic import (
     _is_excluded,
     _is_test_file,
     _match_test_file,
+    _match_test_files,
     _matches_source_pattern,
     run_layer2,
 )
@@ -69,6 +70,34 @@ class TestMatchTestFile:
             patterns=_PY_PATTERNS,
         )
         assert result is None
+
+
+class TestMatchTestFiles:
+    def test_returns_all_matching_tests(self):
+        # A source with a unit + integration test, matched by a glob template.
+        repo = [
+            "src/Foo.php",
+            "tests/FooTest.php",
+            "tests/FooIntegrationTest.php",
+        ]
+        patterns = {"php": {"src_pattern": "**/*.php",
+                            "test_template": "**/{name}*Test.php"}}
+        result = _match_test_files("src/Foo.php", repo, patterns)
+        assert "tests/FooTest.php" in result
+        assert "tests/FooIntegrationTest.php" in result
+        assert len(result) == 2
+
+    def test_singular_wrapper_returns_first_match(self):
+        repo = ["src/Foo.php", "tests/FooTest.php", "tests/FooIntegrationTest.php"]
+        patterns = {"php": {"src_pattern": "**/*.php",
+                            "test_template": "**/{name}*Test.php"}}
+        result = _match_test_file("src/Foo.php", repo, patterns)
+        assert result == _match_test_files("src/Foo.php", repo, patterns)[0]
+
+    def test_no_match_returns_empty(self):
+        patterns = {"php": {"src_pattern": "**/*.php",
+                            "test_template": "**/{name}Test.php"}}
+        assert _match_test_files("src/foo.php", ["src/foo.php"], patterns) == []
 
 
 class TestIsTestFile:

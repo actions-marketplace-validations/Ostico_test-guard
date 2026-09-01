@@ -38,7 +38,7 @@ def _matches_source_pattern(filepath: str, patterns: dict[str, dict[str, str]]) 
 
 def _is_test_file(filepath: str, patterns: dict[str, dict[str, str]]) -> bool:
     """Check if a file is itself a test file using pattern heuristics.
-    
+
     Instead of running the template substitution, we check if the filename
     matches known test patterns (e.g., ends with _test, Test, .test., etc.).
     This avoids false positives from template expansion and is faster.
@@ -67,40 +67,44 @@ def _is_test_file(filepath: str, patterns: dict[str, dict[str, str]]) -> bool:
     return False
 
 
+def _match_test_files(
+    source_file: str,
+    all_repo_files: list[str],
+    patterns: dict[str, dict[str, str]],
+) -> list[str]:
+    """Find ALL test files matching a source file.
+
+    A single class/module legitimately has several test files (unit +
+    integration + e2e), and a glob test_template (e.g. ``{name}*Test.php``) can
+    match more than one. Iterates the language patterns; for each whose
+    src_pattern matches the source, expands {name} in the test_template and
+    collects every repo file that matches. Order follows pattern order then
+    repo-file order; duplicates are removed.
+    """
+    if _is_test_file(source_file, patterns):
+        return []  # Don't match test files against themselves
+
+    source_name = PurePosixPath(source_file).stem
+    matches: list[str] = []
+    for _lang, mapping in patterns.items():
+        if not fnmatch.fnmatch(source_file, mapping["src_pattern"]):
+            continue
+        test_name = mapping["test_template"].replace("{name}", source_name)
+        for repo_file in all_repo_files:
+            if fnmatch.fnmatch(repo_file, test_name) and repo_file not in matches:
+                matches.append(repo_file)
+    return matches
+
+
 def _match_test_file(
     source_file: str,
     all_repo_files: list[str],
     patterns: dict[str, dict[str, str]],
 ) -> str | None:
-    """Find a matching test file for a source file.
-
-    Iterates through all language patterns, checks if the source file matches
-    the language's source pattern, then searches all repo files for a match
-    against the test template. Returns the test file path if found, None otherwise.
-    """
-    if _is_test_file(source_file, patterns):
-        return None  # Don't match test files against themselves
-
-    source_path = PurePosixPath(source_file)
-    source_name = source_path.stem
-
-    for _lang, mapping in patterns.items():
-        src_pattern = mapping["src_pattern"]
-        test_template = mapping["test_template"]
-
-        # Check if this source file matches the language pattern
-        if not fnmatch.fnmatch(source_file, src_pattern):
-            continue
-
-        # Build possible test file names from template
-        test_name = test_template.replace("{name}", source_name)
-
-        # Search repo files for a match
-        for repo_file in all_repo_files:
-            if fnmatch.fnmatch(repo_file, test_name):
-                return repo_file
-
-    return None
+    """The canonical (first) matching test file, or None. Thin wrapper over
+    ``_match_test_files`` preserved for callers that want a single match."""
+    matches = _match_test_files(source_file, all_repo_files, patterns)
+    return matches[0] if matches else None
 
 
 def run_layer2(
@@ -136,9 +140,10 @@ def run_layer2(
         if not _matches_source_pattern(filepath, patterns):
             continue
 
-        test_file = _match_test_file(filepath, all_repo_files, patterns)
+        matched = _match_test_files(filepath, all_repo_files, patterns)
+        changed_matches = [t for t in matched if t in changed_set]
 
-        if test_file is None:
+        if not matched:
             file_verdicts.append(
                 FileVerdict(
                     file=filepath,
@@ -147,25 +152,30 @@ def run_layer2(
                     layer="layer2",
                 )
             )
-        elif test_file in changed_set:
+        elif changed_matches:
+            # At least one matched test was modified in the PR.
+            canonical = changed_matches[0]
             file_verdicts.append(
                 FileVerdict(
                     file=filepath,
                     verdict=Verdict.PASS,
-                    reason=f"Test file modified in PR: {test_file}",
+                    reason=f"Test file modified in PR: {canonical}",
                     layer="layer2",
-                    matched_test=test_file,
+                    matched_test=canonical,
+                    matched_tests=tuple(matched),
                 )
             )
         else:
-            # Test exists but wasn't modified — ambiguous
+            # Test(s) exist but none were modified — ambiguous
+            canonical = matched[0]
             file_verdicts.append(
                 FileVerdict(
                     file=filepath,
                     verdict=Verdict.WARNING,
-                    reason=f"Test file exists ({test_file}) but was not modified in this PR",
+                    reason=f"Test file exists ({canonical}) but was not modified in this PR",
                     layer="layer2",
-                    matched_test=test_file,
+                    matched_test=canonical,
+                    matched_tests=tuple(matched),
                 )
             )
 
